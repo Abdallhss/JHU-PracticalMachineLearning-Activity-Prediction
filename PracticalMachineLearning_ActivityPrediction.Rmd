@@ -1,6 +1,6 @@
 ---
 title: 'Practical Machine Learning: Activity Prediction'
-author: "Abdullah"
+author: "Abdullah M. Mustafa"
 date: "January 5, 2020"
 output: html_document
 ---
@@ -8,66 +8,123 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+#Overview:
+This dataset measures different states during a physical activity using on-body sensing to determine if the activity is properly conducted.
+From their [website](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) we cite the following:  
 
-#Get Data
+"Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)."
+
+After exploring the data, the 159 features were reduced to 52 by droping NA columns, date columns, and low variance columns. 25 features were then extracted using Principal component analysis. Finally, ensemble model of random forest, gradient boosting, linear discriminant analysis, and support vector machines was applied to the data. The validation accuracy was about 97%.
+
+#Getting and cleaning the data
+First we download the data from the provided URLs and we load this data.
 ```{r}
-download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv","train.csv")
-download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",'test.csv')
+#download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv","train.csv")
+#download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",'test.csv')
 training <- read.csv("train.csv")
 testing <- read.csv("test.csv")
 ```
+There are too many features which can be dropped.  The following columns wil be dropped: 
+1. Columns 1 through 6: These include data like name, index and time which are not significant for activity prediction and might introduce data leakage. 
+2. Columns with lots of NAs: Features with NAs exceeding half of the number of observations will be dropped.
+3. Columns with near zero variance: these features doesn't vary much so they might not be valuable predictors. 
 ```{r}
+library(caret)
 na_values <- as.data.frame(apply(is.na(training),2, sum))
 high_NAs <- na_values > 0.5*dim(training)[1]
-library(caret)
 near_zero_Var <- nearZeroVar(training,saveMetrics=TRUE)
 training_reduced = subset(training,select=!near_zero_Var$nzv & !high_NAs)
 testing_reduced = subset(testing,select=!near_zero_Var$nzv & !high_NAs)
 training_reduced <- subset(training_reduced,select=-c(1:6))
 testing_reduced <- subset(testing_reduced,select=-c(1:6))
-
+```
+#Explore the data
+First, we can view the "classe" variable ditribution.
+```{r barplot}
+library(ggplot2)
+qplot(classe,data=training)
 ```
 
-```{r}
+- Most activities are within class A (proper exercise). Other activities have close occurances.
+
+Since data is highly diminsional, we need to use some reduction technique to visualize the data. We use PCA to plot the two principle components for different activities.
+```{r PCAplot}
 PCA_preProc <- preProcess(training_reduced[,-53],method="pca",pcaComp=2)
 PCA_comps <- predict(PCA_preProc,training_reduced[,-53])
 PCA_comps$classe <- training_reduced$classe
-library(ggplot2)
 qplot(PC1,PC2,col=classe,data=PCA_comps)
 ```
+
+- We can see some clusters of data but they don't correpond directly to the "classe" classes. 2 components can't explain enough variance. PCA should thus be used with higher threshold. 
+
+#Model the data
+
+##Dimensionality Reduction and Data split
+We use PCA to reduce the number of features with a threshold of 95% explained variance. We then split the training dataset into 75% training and 25% validation.
+- The data is relatively large, so cross validation might not be needed.
 ```{r}
 PCA_preProc2 <- preProcess(training_reduced[,-53],method="pca",thresh = 0.95)
 training_PCA <- predict(PCA_preProc2,training_reduced[,-53])
 training_PCA$classe <- training_reduced$classe
-testing_PCA <- predict(PCA_preProc2,testing_reduced[,-53])
+testing_data <- predict(PCA_preProc2,testing_reduced[,-53])
+
+inTrain <- createDataPartition(training_PCA$classe,p=0.75,list = FALSE)
+training_data = training_PCA[ inTrain,]
+validation_data = training_PCA[-inTrain,]
 ```
-```{r}
+- The number of features was reduced to 24 after PCA.
+
+##Ensemble model
+We can now create our prediction model. We use ensemble model to increase the accuracy of the model. We ensemble 4 powerful nonlinear machine learning models which are:
+1. Random Forest
+2. Gradient Boosting
+3. Support Vector Machines
+4. Linear Discriminant Analysis
+###Fit the model
+First, we fit these models using the training data.
+```{r }
+set.seed(123)
 library(randomForest)
 library(gbm)
 library(e1071)
-fit_rf <- randomForest(classe ~.,data=training_PCA)
-fit_gbm <- gbm(classe ~.,data=training_PCA)
-fit_lda <- train(classe ~.,method="lda",data=training_PCA)
-fit_svm <- svm(classe ~.,data=training_PCA)
+fit_rf <- randomForest(classe ~.,data=training_data)
+fit_gbm <- gbm(classe ~.,data=training_data)
+fit_lda <- train(classe ~.,method="lda",data=training_data)
+fit_svm <- svm(classe ~.,data=training_data)
 ```
+We can then ensemble the prediction from all models using an additional SVM model.
 ```{r}
-pred1 <- predict(fit_rf,training_PCA)
-pred2 <- predict(fit_gbm,training_PCA,n.trees = 100)
-pred3 <- predict(fit_lda,training_PCA)
-pred4 <- predict(fit_svm,training_PCA)
+pred1 <- predict(fit_rf,training_data)
+pred2 <- predict(fit_gbm,training_data,n.trees = 100)
+pred3 <- predict(fit_lda,training_data)
+pred4 <- predict(fit_svm,training_data)
 
-predDF <- data.frame(pred1,pred2,pred3,pred4,classe=training_reduced$classe)
+predDF <- data.frame(pred1,pred2,pred3,pred4,classe=training_data$classe)
 combModFit <- svm(classe ~.,data=predDF)
-confusionMatrix(predict(combModFit,predDF),training_reduced$classe)
+confusionMatrix(predict(combModFit,predDF),training_data$classe)
 ```
-
+From the training data, we can get a 100% accuracy. How good can we do with validation?
+###Validation & Predictions
+Let's compute the confusion matrix for the validation data.
 ```{r}
-pred1 <- predict(fit_rf,testing_PCA)
-pred2 <- predict(fit_gbm,testing_PCA,n.trees = 100)
-pred3 <- predict(fit_lda,testing_PCA)
-pred4 <- predict(fit_svm,testing_PCA)
+pred1 <- predict(fit_rf,validation_data)
+pred2 <- predict(fit_gbm,validation_data,n.trees = 100)
+pred3 <- predict(fit_lda,validation_data)
+pred4 <- predict(fit_svm,validation_data)
+predDF <- data.frame(pred1,pred2,pred3,pred4)
+valid_prediction <- predict(combModFit,predDF)
+confusionMatrix(valid_prediction,validation_data$classe)
+```
+The validation accuracy is not perfect, but 97.6% is a good accuracy.
+We can now predict the activities of the test data
+```{r}
+pred1 <- predict(fit_rf,testing_data)
+pred2 <- predict(fit_gbm,testing_data,n.trees = 100)
+pred3 <- predict(fit_lda,testing_data)
+pred4 <- predict(fit_svm,testing_data)
 
 predDF_test <- data.frame(pred1,pred2,pred3,pred4)
 predictions <- predict(combModFit,predDF_test)
 predictions
 ```
+These predictions were pretty accurate with a 19/20 accuracy. 

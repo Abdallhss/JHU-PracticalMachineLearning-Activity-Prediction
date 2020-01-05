@@ -1,0 +1,73 @@
+---
+title: 'Practical Machine Learning: Activity Prediction'
+author: "Abdullah"
+date: "January 5, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Get Data
+```{r}
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv","train.csv")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",'test.csv')
+training <- read.csv("train.csv")
+testing <- read.csv("test.csv")
+```
+```{r}
+na_values <- as.data.frame(apply(is.na(training),2, sum))
+high_NAs <- na_values > 0.5*dim(training)[1]
+library(caret)
+near_zero_Var <- nearZeroVar(training,saveMetrics=TRUE)
+training_reduced = subset(training,select=!near_zero_Var$nzv & !high_NAs)
+testing_reduced = subset(testing,select=!near_zero_Var$nzv & !high_NAs)
+training_reduced <- subset(training_reduced,select=-c(1:6))
+testing_reduced <- subset(testing_reduced,select=-c(1:6))
+
+```
+
+```{r}
+PCA_preProc <- preProcess(training_reduced[,-53],method="pca",pcaComp=2)
+PCA_comps <- predict(PCA_preProc,training_reduced[,-53])
+PCA_comps$classe <- training_reduced$classe
+library(ggplot2)
+qplot(PC1,PC2,col=classe,data=PCA_comps)
+```
+```{r}
+PCA_preProc2 <- preProcess(training_reduced[,-53],method="pca",thresh = 0.95)
+training_PCA <- predict(PCA_preProc2,training_reduced[,-53])
+training_PCA$classe <- training_reduced$classe
+testing_PCA <- predict(PCA_preProc2,testing_reduced[,-53])
+```
+```{r}
+library(randomForest)
+library(gbm)
+library(e1071)
+fit_rf <- randomForest(classe ~.,data=training_PCA)
+fit_gbm <- gbm(classe ~.,data=training_PCA)
+fit_lda <- train(classe ~.,method="lda",data=training_PCA)
+fit_svm <- svm(classe ~.,data=training_PCA)
+```
+```{r}
+pred1 <- predict(fit_rf,training_PCA)
+pred2 <- predict(fit_gbm,training_PCA,n.trees = 100)
+pred3 <- predict(fit_lda,training_PCA)
+pred4 <- predict(fit_svm,training_PCA)
+
+predDF <- data.frame(pred1,pred2,pred3,pred4,classe=training_reduced$classe)
+combModFit <- svm(classe ~.,data=predDF)
+confusionMatrix(predict(combModFit,predDF),training_reduced$classe)
+```
+
+```{r}
+pred1 <- predict(fit_rf,testing_PCA)
+pred2 <- predict(fit_gbm,testing_PCA,n.trees = 100)
+pred3 <- predict(fit_lda,testing_PCA)
+pred4 <- predict(fit_svm,testing_PCA)
+
+predDF_test <- data.frame(pred1,pred2,pred3,pred4)
+predictions <- predict(combModFit,predDF_test)
+predictions
+```
